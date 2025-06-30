@@ -4,341 +4,369 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Meeting Protokoll Generator</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bulma/0.9.3/css/bulma.min.css">
-    <script src="https://unpkg.com/wavesurfer.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@1/css/pico.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { padding-bottom: 5em; }
+        .hidden { display: none; }
+        .error-msg { color: var(--pico-color-red-500); }
+        .status-box { margin-top: 1.5rem; padding: 1rem; border: 1px solid var(--pico-form-element-border-color); border-radius: var(--pico-border-radius); }
+        #summary-result { white-space: pre-wrap; padding: 1rem; background-color: var(--pico-contrast-background-color); border-radius: var(--pico-border-radius); margin-top: 1rem;}
+        table { font-size: 0.9em; }
+    </style>
 </head>
 <body>
-    <section class="section">
-        <div class="container">
-            <h1 class="title">Meeting Protokoll Generator</h1>
-            <p class="subtitle">Laden Sie eine Meeting-Aufzeichnung hoch, und lassen Sie ein strukturiertes, zusammengefasstes Protokoll erstellen.</p>
+    <main class="container">
+        <header class="container">
+            <hgroup>
+                <h1>Meeting Protokoll Generator</h1>
+                <h2>Lokale Analyse von Audio-Dateien</h2>
+            </hgroup>
+        </header>
 
-            <div class="box">
-                <form id="upload-form">
-                    <div class="field">
-                        <label class="label">Audiodatei hochladen (MP3 oder WAV)</label>
-                        <div class="control">
-                            <input class="input" type="file" id="audio-file" name="audio">
-                        </div>
-                    </div>
-                    <button class="button is-link" type="submit">Datei hochladen</button>
-                </form>
-                <div id="upload-result" class="notification is-hidden mt-4"></div>
+        <details>
+            <summary>API-Schlüssel konfigurieren</summary>
+            <div class="grid">
+                <label for="huggingface-key">
+                    Hugging Face Key
+                    <input type="password" id="huggingface-key" name="huggingface-key" placeholder="hf_...">
+                </label>
+                <label for="openai-key">
+                    OpenAI Key
+                    <input type="password" id="openai-key" name="openai-key" placeholder="sk-...">
+                </label>
             </div>
+            <button id="save-keys-button">Schlüssel speichern</button>
+        </details>
 
-            <!-- Audio Player Box -->
-            <div class="box" id="audio-player-box" style="display: none;">
-                <h2 class="subtitle">Hochgeladene Audiodatei anhören</h2>
-                <div id="waveform"></div>
-                <button class="button is-primary mt-2" id="play-pause-button">Play/Pause</button>
-            </div>
+        <article>
+            <form id="upload-form">
+                <label for="audio-file">1. Audiodatei auswählen</label>
+                <input type="file" id="audio-file" name="audio-file" accept=".wav, .mp3, .m4a, .ogg" required>
+                <small>Wird lokal in Ihrem Browser verarbeitet. Nichts verlässt Ihren Computer, es sei denn, Sie erstellen eine Zusammenfassung.</small>
+                
+                <label for="model-size">Whisper Modellgröße</label>
+                <select id="model-size" name="model-size" required>
+                    <option value="tiny">Tiny (~39M params)</option>
+                    <option value="base" selected>Base (~74M params)</option>
+                    <option value="small">Small (~244M params)</option>
+                </select>
 
-            <div class="box">
-                <h2 class="subtitle">Analyse und Zusammenfassung</h2>
-                <button id="analyze-button" class="button is-primary" disabled>Starte Analyse</button>
-               
-                <div id="analyze-result" class="mt-4"></div>
-
-               
-                <div class="box mt-4">
-                    <h2 class="subtitle">Prompt Vorschau</h2>
-                    <button id="show-prompt-button" class="button is-info mb-4" disabled>Prompt generieren</button>
-                    <div id="prompt-preview" class="notification is-light is-info" style="display: none; white-space: pre-wrap;">
-                    </div>
-                </div>
-
-
-                <div class="mt-4">
-                    <label class="label">Modell zur Zusammenfassung auswählen</label>
-                    <div class="control">
-                        <div class="select">
-                            <select id="model-type">
-                                {% for model in models %}
-                                <option value="{{ model.id }}">
-                                    {{ model.name }} ({{ model.api }})
-                                </option>
-                                {% endfor %}
-                            </select>
-                        </div>
-                    </div>
-                    <button id="generate-summary-button" class="button is-link mt-4" disabled>Zusammenfassung erstellen</button>
-                </div>
-                <div id="summary-result" class="mt-4"></div>
-            </div>
-        </div>
-    </section>
-
-    <script>
-        let wavesurfer;
-        let segments;
-        let currentAudioprocessListener = null;  // Speichert den aktuellen audioprocess listener
-
-        document.getElementById("upload-form").addEventListener("submit", async function(event) {
-            event.preventDefault();
-            const fileInput = document.getElementById("audio-file");
-            if (!fileInput.files.length) {
-                alert("Bitte eine Datei auswählen.");
-                return;
-            }
-
-            const formData = new FormData();
-            formData.append("audio", fileInput.files[0]);
-
-            const uploadResult = document.getElementById("upload-result");
-            try {
-                const response = await fetch("/uploads", {
-                    method: "POST",
-                    body: formData
-                });
-                const result = await response.json();
-                if (response.ok) {
-                    uploadResult.classList.remove("is-hidden", "is-danger");
-                    uploadResult.classList.add("is-info");
-                    uploadResult.textContent = "Datei erfolgreich hochgeladen.";
-                    document.getElementById("analyze-button").disabled = false;
-                    console.log("Audio file uploaded successfully, enabling analyze button.");
-                    window.wavFilePath = result.wav_filepath;
-
-                    // Display audio player
-                    document.getElementById("audio-player-box").style.display = "block";
-                    if (wavesurfer) {
-                        wavesurfer.destroy();
-                    }
-                    wavesurfer = WaveSurfer.create({
-                        container: "#waveform",
-                        waveColor: "#ddd",
-                        progressColor: "#007bff"
-                    });
-                    wavesurfer.load(window.wavFilePath);
-                    console.log("Loading audio from: " + window.wavFilePath);
-                } else {
-                    uploadResult.classList.remove("is-hidden", "is-info");
-                    uploadResult.classList.add("is-danger");
-                    uploadResult.textContent = result.error;
-                }
-            } catch (error) {
-                uploadResult.classList.remove("is-hidden", "is-info");
-                uploadResult.classList.add("is-danger");
-                uploadResult.textContent = "Fehler beim Hochladen der Datei.";
-            }
-        });
-
-        document.getElementById("analyze-button").addEventListener("click", async function() {
-            if (!window.wavFilePath) {
-                alert("Bitte zuerst eine Datei hochladen.");
-                return;
-            }
-
-            try {
-                const response = await fetch("/analyze", {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json"
-                    },
-                    body: JSON.stringify({ wav_filepath: window.wavFilePath })
-                });
-                const result = await response.json();
-                const analyzeResult = document.getElementById("analyze-result");
-                analyzeResult.innerHTML = "";
-
-                if (response.ok) {
-                    segments = result.segments;
-                    const table = document.createElement("table");
-                    table.classList.add("table", "is-fullwidth", "is-striped", "mt-4");
-                    const tbody = document.createElement("tbody");
-                    table.appendChild(tbody);
-
-                    segments.forEach((segment, index) => {
-                        const row = document.createElement("tr");
-                        row.innerHTML = `
-                            <td><strong>Sprecher ${index + 1}:</strong> <input type="text" value="${segment.speaker}" class="input is-small speaker-name"></td>
-                            <td><strong>Start:</strong> ${segment.start.toFixed(2)}s</td>
-                            <td><strong>Ende:</strong> ${segment.end.toFixed(2)}s</td>
-                            <td><strong>Transkript:</strong> ${segment.transcript}</td>
-                            <td><button class="button is-small is-link play-segment" data-start="${segment.start}" data-end="${segment.end}">Anhören</button></td>
-                        `;
-                        tbody.appendChild(row);
-                    });
-                    analyzeResult.appendChild(table);
-                    document.getElementById("generate-summary-button").disabled = false;
-
-                    // Aktiviere den Show Prompt Button nach erfolgreicher Analyse
-                    document.getElementById("show-prompt-button").disabled = false;
-
-                } else {
-                    analyzeResult.innerHTML = `<div class="notification is-danger">${result.error}</div>`;
-                }
-            } catch (error) {
-                document.getElementById("analyze-result").innerHTML = `<div class="notification is-danger">Fehler bei der Analyse.</div>`;
-            }
-        });
-
-        document.getElementById("generate-summary-button").addEventListener("click", async function() {
-            if (!segments) {
-                alert("Bitte zuerst die Analyse durchführen.");
-                return;
-            }
-
-            const modelType = document.getElementById("model-type").value;
-            const prompt = generatePromptFromSegments(segments); // 
-
-            try {
-                const response = await fetch("/generate_summary", {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json"
-                    },
-                    body: JSON.stringify({ 
-                        segments: segments, 
-                        model_type: modelType,
-                        prompt: prompt // Füge den Prompt zur Anfrage hinzu
-                    })
-                });
-                const result = await response.json();
-                const summaryResult = document.getElementById("summary-result");
-                if (response.ok) {
-                    summaryResult.innerHTML = `<div class="notification is-info">${result.summary}</div>`;
-                } else {
-                    summaryResult.innerHTML = `<div class="notification is-danger">${result.error}</div>`;
-                }
-            } catch (error) {
-                document.getElementById("summary-result").innerHTML = `<div class="notification is-danger">Fehler bei der Zusammenfassungserstellung.</div>`;
-            }
-        });
-
-        document.getElementById("play-pause-button").addEventListener("click", function() {
-            if (wavesurfer) {
-                wavesurfer.playPause();
-            }
-        });
-
-         // Segment-Wiedergabe-Funktion
-         document.addEventListener("click", function(event) {
-            if (event.target.classList.contains("play-segment")) {
-                const start = parseFloat(event.target.getAttribute("data-start"));
-                const end = parseFloat(event.target.getAttribute("data-end"));
-
-                if (wavesurfer) {
-                    // Entferne vorherigen audioprocess listener, falls vorhanden
-                    if (currentAudioprocessListener) {
-                        wavesurfer.un('audioprocess', currentAudioprocessListener);
-                        currentAudioprocessListener = null;
-                    }
-
-                    // Definiere neuen audioprocess listener
-                    currentAudioprocessListener = function(currentTime) {
-                        if (currentTime >= end) {
-                            wavesurfer.pause();
-                            // Optional: Entferne den Listener nach dem Pausieren
-                            wavesurfer.un('audioprocess', currentAudioprocessListener);
-                            currentAudioprocessListener = null;
-                        }
-                    };
-
-                    // Füge den neuen Listener hinzu
-                    wavesurfer.on('audioprocess', currentAudioprocessListener);
-
-                    // Setze die Position und starte die Wiedergabe
-                    wavesurfer.seekTo(start / wavesurfer.getDuration());
-                    wavesurfer.play();
-
-                    console.log(`Playing segment from ${start} to ${end} seconds`);
-                }
-            }
-        });
+                <button type="submit" id="submit-button">Analyse starten</button>
+            </form>
+        </article>
         
+        <div id="status-container" class="hidden">
+            <article>
+                <h3 id="status-heading">Verarbeitung läuft...</h3>
+                <progress id="progress-bar" indeterminate></progress>
+                <p id="status-message">Die Datei wird hochgeladen und verarbeitet. Dies kann einige Minuten dauern.</p>
+                <p id="status-error" class="error-msg hidden"></p>
+            </article>
+        </div>
 
-        // Verbesserte generatePromptFromSegments Funktion
-function generatePromptFromSegments(segments) {
-    if (!segments || segments.length === 0) {
-        console.log("Keine Segmente vorhanden");
-        return "";
+        <div id="results-container" class="hidden">
+            <hr>
+            <h2>Ergebnisse</h2>
+            <article>
+                <div class="grid">
+                    <div id="transcript-container">
+                        <h3>Transkript</h3>
+                        <div id="transcript-table-container"></div>
+                    </div>
+                    <div id="analysis-container">
+                        <h3>Analyse</h3>
+                        <canvas id="speaker-chart"></canvas>
+                    </div>
+                </div>
+
+                <hr>
+                <h3>Zusammenfassung</h3>
+                <div class="grid">
+                    <select id="summary-model">
+                        <option value="gpt-4o">OpenAI (GPT-4o)</option>
+                        <option value="bart-large-cnn">Hugging Face (bart-large-cnn)</option>
+                        <option value="ollama">Lokales Ollama</option>
+                    </select>
+                    <input type="text" id="ollama-url" placeholder="http://127.0.0.1:11434" class="hidden">
+                    <button id="summarize-button">Zusammenfassung erstellen</button>
+                </div>
+                <div id="summary-result-container" class="hidden">
+                    <p id="summary-status"></p>
+                    <div id="summary-result"></div>
+                </div>
+            </article>
+        </div>
+    </main>
+
+<script>
+document.addEventListener("DOMContentLoaded", () => {
+    // --- Globale Variablen ---
+    let jobId = null;
+    let pollInterval = null;
+
+    // --- DOM Elemente ---
+    const uploadForm = document.getElementById("upload-form");
+    const submitButton = document.getElementById("submit-button");
+    const statusContainer = document.getElementById("status-container");
+    const statusHeading = document.getElementById("status-heading");
+    const statusMessage = document.getElementById("status-message");
+    const statusError = document.getElementById("status-error");
+    const progressBar = document.getElementById("progress-bar");
+    const resultsContainer = document.getElementById("results-container");
+    const transcriptContainer = document.getElementById("transcript-table-container");
+    const analysisContainer = document.getElementById("analysis-container");
+    const chartCanvas = document.getElementById("speaker-chart");
+    const summarizeButton = document.getElementById("summarize-button");
+    const summaryModelSelect = document.getElementById("summary-model");
+    const ollamaUrlInput = document.getElementById("ollama-url");
+    const summaryResultContainer = document.getElementById("summary-result-container");
+    const summaryStatus = document.getElementById("summary-status");
+    const summaryResult = document.getElementById("summary-result");
+    const hfKeyInput = document.getElementById("huggingface-key");
+    const openaiKeyInput = document.getElementById("openai-key");
+    const saveKeysButton = document.getElementById("save-keys-button");
+    
+    // --- Initialisierung ---
+    loadApiKeys();
+
+    // --- Event Listeners ---
+    saveKeysButton.addEventListener("click", saveApiKeys);
+    uploadForm.addEventListener("submit", handleUpload);
+    summaryModelSelect.addEventListener("change", toggleOllamaUrl);
+    summarizeButton.addEventListener("click", handleSummarize);
+    
+    // --- Funktionen ---
+    function saveApiKeys() {
+        localStorage.setItem("huggingface_key", hfKeyInput.value);
+        localStorage.setItem("openai_key", openaiKeyInput.value);
+        alert("API-Schlüssel wurden im Browser gespeichert.");
     }
 
-    // Sammle alle einzigartigen Sprecher
-    const uniqueSpeakers = new Set();
-    segments.forEach(segment => {
-        if (segment.speaker) {
-            uniqueSpeakers.add(segment.speaker);
-        }
-    });
-
-    // Formatiere das Transkript mit Sprechern und Zeitstempeln
-    const formattedTranscript = segments
-        .map(segment => {
-            const startTime = segment.start.toFixed(2);
-            const endTime = segment.end.toFixed(2);
-            return `[${startTime}s - ${endTime}s] ${segment.speaker}: ${segment.transcript.trim()}`;
-        })
-        .join('\n\n');
-
-    // Erstelle den Prompt mit dem Template
-    const promptTemplate = 
-`Fasse das folgende Meeting-Transkript in einem strukturierten Protokoll zusammen.
-Verwende dabei klare Überschriften und Aufzählungspunkte zur Strukturierung.
-
-Erfasse folgende Punkte:
-- Alle getroffenen Aufgaben
-- Alle aufgetretenen Probleme
-- Alle getroffenen Entscheidungen
-- Alle gefundenen Lösungen zu Problemen
-- Alle Termine
-- Alle Anwesenden
-
-Anwesende Sprecher:
-${Array.from(uniqueSpeakers).join(', ')}
-
-Transkript:
-${formattedTranscript}
-
-Bitte strukturiere das Protokoll mit klaren Überschriften für jeden Bereich.`;
-
-    return promptTemplate;
-}
-
-// Verbesserte Show Prompt Button Funktion
-document.getElementById("show-prompt-button").addEventListener("click", function() {
-    console.log("Show prompt button clicked");
-    if (!segments || segments.length === 0) {
-        alert("Bitte zuerst die Analyse durchführen.");
-        return;
+    function loadApiKeys() {
+        hfKeyInput.value = localStorage.getItem("huggingface_key") || "";
+        openaiKeyInput.value = localStorage.getItem("openai_key") || "";
     }
 
-    const promptPreview = document.getElementById("prompt-preview");
-    const prompt = generatePromptFromSegments(segments);
-    
-    // Formatiere den Prompt für die Anzeige
-    promptPreview.textContent = prompt;
-    
-    // Zeige die Box an
-    promptPreview.style.display = "block";
-    
-    console.log("Prompt generated and displayed");
-});
-        // Optional: Cleanup-Funktion für wavesurfer
-        window.addEventListener('beforeunload', function() {
-            if (wavesurfer) {
-                wavesurfer.destroy();
+    function getApiKeysHeader() {
+        // This is a placeholder as the backend uses environment variables.
+        // For a full client-side solution, keys would be sent with requests.
+        // In our architecture, the backend handles keys, so this is not needed for requests.
+        return {};
+    }
+
+    async function handleUpload(event) {
+        event.preventDefault();
+        
+        // UI zurücksetzen
+        resetUI();
+        statusContainer.classList.remove("hidden");
+        submitButton.disabled = true;
+        submitButton.setAttribute("aria-busy", "true");
+
+        const formData = new FormData();
+        formData.append("audio_file", document.getElementById("audio-file").files[0]);
+        formData.append("model_size", document.getElementById("model-size").value);
+
+        try {
+            const response = await fetch("/process", {
+                method: "POST",
+                headers: { 'X-API-Key': 'your_default_secret_key' }, // Use key required by backend
+                body: formData
+            });
+
+            if (response.status !== 202) {
+                const error = await response.json();
+                throw new Error(error.message || "Unbekannter Fehler beim Starten der Verarbeitung.");
             }
+
+            const result = await response.json();
+            jobId = result.job_id;
+            statusMessage.textContent = "Verarbeitung gestartet. Job ID: " + jobId;
+            startPolling();
+
+        } catch (error) {
+            showError("Fehler beim Upload: " + error.message);
+        }
+    }
+
+    function startPolling() {
+        pollInterval = setInterval(async () => {
+            if (!jobId) return;
+
+            try {
+                const response = await fetch(`/status/${jobId}`, {
+                    headers: { 'X-API-Key': 'your_default_secret_key' }
+                });
+                const status = await response.json();
+
+                progressBar.value = status.progress || 0;
+                statusMessage.textContent = status.message || "Keine Nachricht.";
+
+                if (status.status === "completed") {
+                    stopPolling();
+                    statusHeading.textContent = "Analyse abgeschlossen!";
+                    await fetchResults();
+                } else if (status.status === "failed") {
+                    stopPolling();
+                    showError(status.message);
+                }
+            } catch (error) {
+                stopPolling();
+                showError("Verbindung zum Server verloren.");
+            }
+        }, 2000);
+    }
+
+    function stopPolling() {
+        clearInterval(pollInterval);
+        pollInterval = null;
+    }
+
+    async function fetchResults() {
+        try {
+            const response = await fetch(`/results/${jobId}`, {
+                headers: { 'X-API-Key': 'your_default_secret_key' }
+            });
+            if (!response.ok) {
+                const error = await response.json();
+                throw new Error(error.message || "Fehler beim Abrufen der Ergebnisse.");
+            }
+            const results = await response.json();
+            displayResults(results.protocol);
+        } catch (error) {
+            showError(error.message);
+        }
+    }
+    
+    function displayResults(protocol) {
+        statusContainer.classList.add("hidden");
+        resultsContainer.classList.remove("hidden");
+
+        renderTranscriptTable(protocol);
+        renderAnalysisChart(protocol);
+    }
+    
+    function renderTranscriptTable(protocol) {
+        let table = '<table><thead><tr><th>Sprecher</th><th>Zeit</th><th>Transkript</th></tr></thead><tbody>';
+        protocol.forEach(segment => {
+            table += `<tr>
+                <td>${segment.speaker}</td>
+                <td>${segment.start.toFixed(2)}s - ${segment.end.toFixed(2)}s</td>
+                <td>${segment.transcript}</td>
+            </tr>`;
+        });
+        table += '</tbody></table>';
+        transcriptContainer.innerHTML = table;
+    }
+
+    function renderAnalysisChart(protocol) {
+        const speakerTimes = {};
+        protocol.forEach(segment => {
+            const duration = segment.end - segment.start;
+            speakerTimes[segment.speaker] = (speakerTimes[segment.speaker] || 0) + duration;
         });
 
-    </script>
+        const labels = Object.keys(speakerTimes);
+        const data = Object.values(speakerTimes);
+
+        new Chart(chartCanvas, {
+            type: 'pie',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: 'Redezeit (Sekunden)',
+                    data: data,
+                    backgroundColor: [
+                        'rgba(255, 99, 132, 0.8)', 'rgba(54, 162, 235, 0.8)',
+                        'rgba(255, 206, 86, 0.8)', 'rgba(75, 192, 192, 0.8)',
+                        'rgba(153, 102, 255, 0.8)', 'rgba(255, 159, 64, 0.8)'
+                    ]
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: {
+                    legend: { position: 'top' },
+                    title: { display: true, text: 'Redeanteile der Sprecher' }
+                }
+            }
+        });
+    }
+
+    async function handleSummarize() {
+        summarizeButton.disabled = true;
+        summarizeButton.setAttribute("aria-busy", "true");
+        summaryResultContainer.classList.remove("hidden");
+        summaryStatus.textContent = "Zusammenfassung wird erstellt...";
+        summaryResult.textContent = "";
+
+        const payload = {
+            model: summaryModelSelect.value,
+            ollama_url: ollamaUrlInput.value || null
+        };
+        
+        try {
+            const response = await fetch(`/summarize/${jobId}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-API-Key': 'your_default_secret_key'
+                },
+                body: JSON.stringify(payload)
+            });
+
+            if (!response.ok) {
+                const error = await response.json();
+                throw new Error(error.message || "Unbekannter Fehler.");
+            }
+
+            const result = await response.json();
+            summaryStatus.textContent = "Zusammenfassung erfolgreich erstellt!";
+            summaryResult.textContent = result.summary;
+
+        } catch (error) {
+            summaryStatus.textContent = "Fehler: " + error.message;
+        } finally {
+            summarizeButton.disabled = false;
+            summarizeButton.removeAttribute("aria-busy");
+        }
+    }
+
+    function toggleOllamaUrl() {
+        if (summaryModelSelect.value === 'ollama') {
+            ollamaUrlInput.classList.remove('hidden');
+        } else {
+            ollamaUrlInput.classList.add('hidden');
+        }
+    }
+
+    function resetUI() {
+        stopPolling();
+        jobId = null;
+        statusContainer.classList.add("hidden");
+        resultsContainer.classList.add("hidden");
+        submitButton.disabled = false;
+        submitButton.removeAttribute("aria-busy");
+        statusHeading.textContent = "Verarbeitung läuft...";
+        statusError.classList.add("hidden");
+        transcriptContainer.innerHTML = "";
+        // Zerstöre altes Chart, falls vorhanden
+        const existingChart = Chart.getChart(chartCanvas);
+        if (existingChart) {
+            existingChart.destroy();
+        }
+    }
+
+    function showError(message) {
+        statusHeading.textContent = "Fehler!";
+        statusMessage.textContent = message;
+        progressBar.removeAttribute("value");
+        submitButton.disabled = false;
+        submitButton.removeAttribute("aria-busy");
+    }
+});
+</script>
+
 </body>
-<style>
-    #prompt-preview {
-        font-family: monospace;
-        padding: 1rem;
-        background-color: #f5f5f5;
-        border: 1px solid #dbdbdb;
-        border-radius: 4px;
-        white-space: pre-wrap;
-        word-wrap: break-word;
-        max-height: 500px;
-        overflow-y: auto;
-    }
-    
-    .notification.is-light.is-info {
-        background-color: #f0f8ff;
-    }
-</style>
 </html>
